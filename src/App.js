@@ -4,18 +4,18 @@ import Camera from "./Sections/Camera";
 import ColorSpectrum from "./Sections/ColorSpectrum";
 import Description from "./Sections/Description";
 import Emoji from "./Sections/Emoji";
-import { zodTextFormat } from "openai/helpers/zod";
-import { z } from "zod";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { z } from "zod/v4";
 
 const getApiKey = () => {
   const urlApiKey = new URLSearchParams(window.location.search).get(
-    "openAiApiKey"
+    "anthropicApiKey"
   );
   if (urlApiKey) {
-    localStorage.setItem("openaiApiKey", urlApiKey);
+    localStorage.setItem("anthropicApiKey", urlApiKey);
     return urlApiKey;
   }
-  return localStorage.getItem("openaiApiKey") || "";
+  return localStorage.getItem("anthropicApiKey") || "";
 };
 
 const isAlignmentMode = () => {
@@ -24,12 +24,16 @@ const isAlignmentMode = () => {
   );
 };
 
-let openaiApiKey = getApiKey();
+let anthropicApiKey = getApiKey();
 
-const Response = z.object({
+const Observation = z.object({
   emoji: z.string(),
   description: z.string()
 });
+
+// Doubles as the request's output_config.format (the parse function is dropped
+// by JSON.stringify) and as the validator for the JSON Claude sends back.
+const observationFormat = zodOutputFormat(Observation);
 
 const Page = styled.div`
   display: flex;
@@ -132,11 +136,11 @@ function App() {
   const isPausedRef = useRef(false);
 
   useEffect(() => {
-    if (!openaiApiKey) {
-      const apiKey = prompt("Please enter your OpenAI API key:");
+    if (!anthropicApiKey) {
+      const apiKey = prompt("Please enter your Anthropic API key:");
       if (apiKey) {
-        openaiApiKey = apiKey.trim();
-        localStorage.setItem("openaiApiKey", openaiApiKey);
+        anthropicApiKey = apiKey.trim();
+        localStorage.setItem("anthropicApiKey", anthropicApiKey);
       }
     }
   }, []);
@@ -147,7 +151,7 @@ function App() {
       !canvasRef.current ||
       isProcessing ||
       isPausedRef.current ||
-      !openaiApiKey
+      !anthropicApiKey
     ) {
       return;
     }
@@ -162,47 +166,55 @@ function App() {
 
       ctx.drawImage(videoRef.current, 0, 0, 256, 256);
 
-      const imageData = canvas.toDataURL("image/jpeg", 0.9);
+      const imageData = canvas.toDataURL("image/jpeg", 0.9).split(",")[1];
 
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${openaiApiKey}`
+          "x-api-key": anthropicApiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
-          model: "gpt-4.1-nano",
-          input: [
+          model: "claude-opus-5",
+          max_tokens: 2048,
+          output_config: {
+            effort: "low",
+            format: observationFormat
+          },
+          messages: [
             {
               role: "user",
               content: [
                 {
-                  type: "input_text",
-                  text: "Look at this image and respond with a single emoji that best represents what you see and a short description of what you see (in the style of a observing radio transmission, max 10 words, with no trailing period)"
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: "image/jpeg",
+                    data: imageData
+                  }
                 },
                 {
-                  type: "input_image",
-                  image_url: imageData,
-                  detail: "low"
+                  type: "text",
+                  text: "Look at this image and respond with a single emoji that best represents what you see and a short description of what you see (in the style of a observing radio transmission, max 10 words, with no trailing period)"
                 }
               ]
             }
-          ],
-          text: {
-            format: zodTextFormat(Response, "response")
-          }
+          ]
         })
       });
 
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(
-          `OpenAI API error: ${response.status} - ${JSON.stringify(errorData)}`
+          `Claude API error: ${response.status} - ${JSON.stringify(errorData)}`
         );
       }
 
       const data = await response.json();
-      const parsedResponse = JSON.parse(data.output?.[0]?.content?.[0]?.text);
+      const textBlock = data.content?.find((block) => block.type === "text");
+      const parsedResponse = observationFormat.parse(textBlock?.text ?? "");
       const emoji = parsedResponse.emoji;
       const description = parsedResponse.description;
 
