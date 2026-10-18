@@ -197,7 +197,7 @@ function App() {
                 },
                 {
                   type: "text",
-                  text: "Look at this image and respond with a single emoji that best represents what you see and a short description of what you see (in the style of a observing radio transmission, max 10 words, with no trailing period)"
+                  text: "Look at this image and respond with a single emoji that best represents what you see and a very short description of what you see (in the style of an observing radio transmission, max 5 words and 32 characters total, prefer short words of 9 letters or fewer, no trailing period). Example: SUBJECT CENTERED, DIM ROOM"
                 }
               ]
             }
