@@ -26,6 +26,10 @@ const isAlignmentMode = () => {
 
 let anthropicApiKey = getApiKey();
 
+// How often a frame is captured and sent for analysis. Ticks that land while a
+// request is still in flight are skipped by the isProcessing guard.
+const CAPTURE_INTERVAL_MS = 2000;
+
 const Observation = z.object({
   emoji: z.string(),
   description: z.string()
@@ -177,7 +181,7 @@ function App() {
           "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
-          model: "claude-opus-5",
+          model: "claude-haiku-5-5",
           max_tokens: 2048,
           output_config: {
             effort: "low",
@@ -237,7 +241,7 @@ function App() {
 
     if (isPaused) {
       timeoutRef.current = setTimeout(captureAndAnalyze, 500);
-      intervalRef.current = setInterval(captureAndAnalyze, 5000);
+      intervalRef.current = setInterval(captureAndAnalyze, CAPTURE_INTERVAL_MS);
     }
     setIsPaused(!isPaused);
     isPausedRef.current = !isPaused;
@@ -307,7 +311,7 @@ function App() {
     const videoElement = videoRef.current;
     setupVideo();
 
-    intervalRef.current = setInterval(captureAndAnalyze, 5000);
+    intervalRef.current = setInterval(captureAndAnalyze, CAPTURE_INTERVAL_MS);
     timeoutRef.current = setTimeout(captureAndAnalyze, 2000);
 
     return () => {
