@@ -43,7 +43,9 @@ const Page = styled.div`
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
   background-color: ${(props) =>
     props.$alignmentMode ? "#ffffff" : "#000000"};
 `;
