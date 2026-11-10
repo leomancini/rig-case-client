@@ -27,7 +27,7 @@ const isAlignmentMode = () => {
 let anthropicApiKey = getApiKey();
 
 // How often a frame is captured and sent for analysis. Ticks that land while a
-// request is still in flight are skipped by the isProcessing guard.
+// request is still in flight are skipped by the isProcessingRef guard.
 const CAPTURE_INTERVAL_MS = 2000;
 
 const Observation = z.object({
@@ -132,7 +132,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [currentEmoji, setCurrentEmoji] = useState(null);
   const [currentDescription, setCurrentDescription] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [alignmentMode] = useState(isAlignmentMode());
   const intervalRef = useRef(null);
@@ -140,6 +139,7 @@ function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const isPausedRef = useRef(false);
+  const isProcessingRef = useRef(false);
 
   useEffect(() => {
     if (!anthropicApiKey) {
@@ -155,15 +155,15 @@ function App() {
     if (
       !videoRef.current ||
       !canvasRef.current ||
-      isProcessing ||
+      isProcessingRef.current ||
       isPausedRef.current ||
       !anthropicApiKey
     ) {
       return;
     }
 
+    isProcessingRef.current = true;
     try {
-      setIsProcessing(true);
 
       const canvas = canvasRef.current;
       const ctx = canvas.getContext("2d");
@@ -182,6 +182,7 @@ function App() {
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true"
         },
+        signal: AbortSignal.timeout(15000),
         body: JSON.stringify({
           model: "claude-haiku-5-5",
           max_tokens: 2048,
@@ -233,9 +234,9 @@ function App() {
     } catch (err) {
       console.error("Error analyzing image:", err);
     } finally {
-      setIsProcessing(false);
+      isProcessingRef.current = false;
     }
-  }, [isProcessing]);
+  }, []);
 
   const handlePauseToggle = useCallback(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -258,10 +259,12 @@ function App() {
 
     let stream = null;
     let mounted = true;
+    let restartTimeout = null;
 
     const startCamera = async () => {
+      const isRestart = stream !== null;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const newStream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: 640,
             height: 480,
@@ -270,13 +273,33 @@ function App() {
           audio: false
         });
 
-        if (mounted) {
-          setVideoStream(stream);
-          setLoading(false);
+        if (!mounted) {
+          newStream.getTracks().forEach((track) => track.stop());
+          return;
         }
+
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+        stream = newStream;
+
+        // If the camera track dies (device glitch, OS reclaiming the camera),
+        // re-acquire it. Not fired by our own track.stop() calls.
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.addEventListener("ended", () => {
+            if (mounted && stream === newStream) startCamera();
+          });
+        }
+
+        setVideoStream(stream);
+        setLoading(false);
       } catch (err) {
         console.error("Error accessing camera:", err);
-        if (mounted) {
+        if (mounted && isRestart) {
+          // Keep retrying a camera that was working before
+          restartTimeout = setTimeout(startCamera, 5000);
+        } else if (mounted) {
           setError(`Camera error: ${err.message}`);
           setLoading(false);
         }
@@ -287,6 +310,7 @@ function App() {
 
     return () => {
       mounted = false;
+      if (restartTimeout) clearTimeout(restartTimeout);
       if (stream) {
         const tracks = stream.getTracks();
         tracks.forEach((track) => track.stop());
@@ -314,7 +338,6 @@ function App() {
     setupVideo();
 
     intervalRef.current = setInterval(captureAndAnalyze, CAPTURE_INTERVAL_MS);
-    timeoutRef.current = setTimeout(captureAndAnalyze, 2000);
 
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
