@@ -26,6 +26,15 @@ const isAlignmentMode = () => {
 
 let anthropicApiKey = getApiKey();
 
+// AbortSignal.timeout needs Chrome 103+ / Safari 16+; fall back to a manual
+// AbortController on older browsers.
+function timeoutSignal(ms) {
+  if (AbortSignal.timeout) return AbortSignal.timeout(ms);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
 // How often a frame is captured and sent for analysis. Ticks that land while a
 // request is still in flight are skipped by the isProcessingRef guard.
 const CAPTURE_INTERVAL_MS = 2000;
@@ -182,7 +191,7 @@ function App() {
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true"
         },
-        signal: AbortSignal.timeout(15000),
+        signal: timeoutSignal(15000),
         body: JSON.stringify({
           model: "claude-haiku-5-5",
           max_tokens: 2048,
