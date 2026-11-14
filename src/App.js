@@ -39,6 +39,19 @@ function timeoutSignal(ms) {
 // request is still in flight are skipped by the isProcessingRef guard.
 const CAPTURE_INTERVAL_MS = 2000;
 
+// Auto-pause: if the camera sees no motion for this long, stop calling the API
+// until motion comes back.
+const IDLE_TIMEOUT_MS = 60 * 1000;
+const MOTION_CHECK_INTERVAL_MS = 1000;
+// Frames are downscaled to this size before comparing.
+const MOTION_SAMPLE_WIDTH = 32;
+const MOTION_SAMPLE_HEIGHT = 24;
+// A pixel counts as changed if its brightness moved by more than this (0-255).
+// Keeps sensor noise from registering as motion.
+const MOTION_PIXEL_THRESHOLD = 25;
+// Fraction of pixels that must change for a frame to count as motion.
+const MOTION_FRAME_THRESHOLD = 0.02;
+
 const Observation = z.object({
   emoji: z.string(),
   description: z.string()
@@ -142,12 +155,17 @@ function App() {
   const [currentEmoji, setCurrentEmoji] = useState(null);
   const [currentDescription, setCurrentDescription] = useState(null);
   const [isPaused, setIsPaused] = useState(false);
+  // Separate from isPaused (manual): auto-pause resumes on its own when motion
+  // comes back, manual pause only resumes on tap.
+  const [isAutoPaused, setIsAutoPaused] = useState(false);
   const [alignmentMode] = useState(isAlignmentMode());
   const intervalRef = useRef(null);
   const timeoutRef = useRef(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const isPausedRef = useRef(false);
+  const isAutoPausedRef = useRef(false);
+  const lastActivityRef = useRef(Date.now());
   const isProcessingRef = useRef(false);
 
   useEffect(() => {
@@ -166,6 +184,7 @@ function App() {
       !canvasRef.current ||
       isProcessingRef.current ||
       isPausedRef.current ||
+      isAutoPausedRef.current ||
       !anthropicApiKey
     ) {
       return;
@@ -234,7 +253,7 @@ function App() {
       const emoji = parsedResponse.emoji;
       const description = parsedResponse.description;
 
-      if (!isPausedRef.current) {
+      if (!isPausedRef.current && !isAutoPausedRef.current) {
         if (emoji) {
           setCurrentEmoji(emoji);
           setCurrentDescription(description);
@@ -248,6 +267,17 @@ function App() {
   }, []);
 
   const handlePauseToggle = useCallback(() => {
+    lastActivityRef.current = Date.now();
+
+    // A tap while auto-paused just wakes it back up.
+    if (isAutoPausedRef.current) {
+      isAutoPausedRef.current = false;
+      setIsAutoPaused(false);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(captureAndAnalyze, 500);
+      return;
+    }
+
     if (intervalRef.current) clearInterval(intervalRef.current);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
 
@@ -357,6 +387,70 @@ function App() {
     };
   }, [videoStream, captureAndAnalyze]);
 
+  // Motion detection for auto-pause. Runs off the hidden capture video, which
+  // keeps playing while auto-paused so motion can wake things back up.
+  useEffect(() => {
+    if (!videoStream || isPaused) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = MOTION_SAMPLE_WIDTH;
+    canvas.height = MOTION_SAMPLE_HEIGHT;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    let previous = null;
+    lastActivityRef.current = Date.now();
+
+    const check = () => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2) return;
+
+      ctx.drawImage(video, 0, 0, MOTION_SAMPLE_WIDTH, MOTION_SAMPLE_HEIGHT);
+      const { data } = ctx.getImageData(
+        0,
+        0,
+        MOTION_SAMPLE_WIDTH,
+        MOTION_SAMPLE_HEIGHT
+      );
+
+      const pixelCount = MOTION_SAMPLE_WIDTH * MOTION_SAMPLE_HEIGHT;
+      const current = new Uint8Array(pixelCount);
+      for (let i = 0; i < pixelCount; i++) {
+        const o = i * 4;
+        current[i] = (data[o] * 77 + data[o + 1] * 150 + data[o + 2] * 29) >> 8;
+      }
+
+      let motion = false;
+      if (previous) {
+        let changed = 0;
+        for (let i = 0; i < pixelCount; i++) {
+          if (Math.abs(current[i] - previous[i]) > MOTION_PIXEL_THRESHOLD) {
+            changed++;
+          }
+        }
+        motion = changed / pixelCount > MOTION_FRAME_THRESHOLD;
+      }
+      previous = current;
+
+      const now = Date.now();
+      if (motion) {
+        lastActivityRef.current = now;
+        if (isAutoPausedRef.current) {
+          isAutoPausedRef.current = false;
+          setIsAutoPaused(false);
+          captureAndAnalyze();
+        }
+      } else if (
+        !isAutoPausedRef.current &&
+        now - lastActivityRef.current > IDLE_TIMEOUT_MS
+      ) {
+        isAutoPausedRef.current = true;
+        setIsAutoPaused(true);
+      }
+    };
+
+    const motionInterval = setInterval(check, MOTION_CHECK_INTERVAL_MS);
+    return () => clearInterval(motionInterval);
+  }, [videoStream, isPaused, captureAndAnalyze]);
+
   useEffect(() => {
     if (videoRef.current && videoStream) {
       if (isPaused) {
@@ -367,11 +461,13 @@ function App() {
     }
   }, [isPaused, videoStream]);
 
+  const showPaused = isPaused || isAutoPaused;
+
   return (
     <Page $alignmentMode={alignmentMode}>
       <TopSection
         $alignmentMode={alignmentMode}
-        $isPaused={isPaused}
+        $isPaused={showPaused}
         onClick={handlePauseToggle}
       >
         {!alignmentMode && (
@@ -379,14 +475,14 @@ function App() {
             videoStream={videoStream}
             error={error}
             loading={loading}
-            isPaused={isPaused}
+            isPaused={showPaused}
             onToggle={handlePauseToggle}
           />
         )}
       </TopSection>
       <MiddleSection
         $alignmentMode={alignmentMode}
-        $isPaused={isPaused}
+        $isPaused={showPaused}
         onClick={handlePauseToggle}
       >
         {!alignmentMode && (
@@ -394,25 +490,25 @@ function App() {
             videoStream={videoStream}
             error={error}
             loading={loading}
-            isPaused={isPaused}
+            isPaused={showPaused}
           />
         )}
       </MiddleSection>
       <BottomLeftSection
         $alignmentMode={alignmentMode}
-        $isPaused={isPaused}
+        $isPaused={showPaused}
         onClick={handlePauseToggle}
       >
         {!alignmentMode && <Description description={currentDescription} />}
       </BottomLeftSection>
       <BottomRightSection
         $alignmentMode={alignmentMode}
-        $isPaused={isPaused}
+        $isPaused={showPaused}
         onClick={handlePauseToggle}
       >
         {!alignmentMode && <Emoji emoji={currentEmoji} />}
       </BottomRightSection>
-      {!alignmentMode && isPaused && !loading && !error && (
+      {!alignmentMode && showPaused && !loading && !error && (
         <PlayButton onClick={handlePauseToggle}>
           <PlayButtonIcon />
         </PlayButton>
